@@ -1,3 +1,4 @@
+import random
 
 def str_to_num(s):
     slen = len(s)
@@ -7,3 +8,7 @@ def str_to_num(s):
         num += ord(c) << mov
     return num
 
+nid = lambda: ''.join([chr(random.randint(0,255)) for _ in range(20)])
+
+if __name__ == '__main__':
+    print repr(nid())
