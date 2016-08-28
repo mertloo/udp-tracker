@@ -3,13 +3,14 @@ Refer to "http://www.bittorrent.org/beps/bep_0015.html".
 '''
 import struct, socket, random, urllib, binascii
 
+# TODO: enhance UDPClient.
+
 class UDPClient(object):
 
     def __init__(self, tracker, info_hash):
         self.connect_id = 0x41727101980 # default connection ID
         self.tracker = tracker # tracker: (host, port)
         self.info_hash = info_hash # hex string
-        self._info_hash = binascii.unhexlify(info_hash) # binascii.a2b_hex
         self.peer_id = '-PU1-' + str(id(self))
         self.downloaded = 0
         self.left = 0
@@ -23,7 +24,6 @@ class UDPClient(object):
         self.sock.settimeout(8)
         self.bufsize = 4096
         self.peers = [] # list of peers
-        #self.interval = self.leechers = self.seeders = 0
         self.interval = 0
         self.seeders = []
         self.leechers = []
@@ -66,11 +66,12 @@ class UDPClient(object):
         '''
         assert self.connect_id != 0x41727101980, 'Has not connected to tracker. (default connect id)'
         tid = ord('a')
+        ih = self.info_hash[0]
         req = struct.pack('!Q2I20s20s3q4iH',
                 self.connect_id, # connect id recieved from tracker
                 0x1, # action: announce
                 tid,
-                self._info_hash,
+                binascii.unhexlify(ih),
                 self.peer_id,
                 self.downloaded,
                 self.left,
@@ -95,10 +96,7 @@ class UDPClient(object):
             self.seeders.append(_seeders)
             self.leechers.append(_leechers)
             offset += 4 * 3
-            remain = len(res) - offset
-            assert remain % 6 == 0
-            n = remain / 6
-            for _ in range(n):
+            while offset < len(res):
                 ip = socket.inet_ntoa(res[offset+1:offset+5])
                 offset += 4
                 port = struct.unpack_from('!H', res, offset)[0]
@@ -114,16 +112,16 @@ class UDPClient(object):
     def scrape(self):
         '''
         Send scrape request, then parse response.
-        (note: up to 74 torrents can be scraped at once.)
         '''
         tid = ord('s')
-        # FIXME: 1 < n <= 74, 'n' info_hash to scrape.
-        req = struct.pack('!Q2I20s',
+        req = struct.pack('!Q2I',
                 self.connect_id,
                 0x2, # action: scrape
                 tid,
-                self._info_hash,
                 )
+        assert len(self.info_hash) <= 74, 'at most 74 torrents can be scraped at once.'
+        for ih in self.info_hash:
+            req += struct.pack('!20s', binascii.unhexlify(ih))
         nbytes = self.sock.sendto(req, self.tracker)
         assert nbytes == len(req), '{} bytes was sent, expected {}'.format(nbytes, len(req))
         res, _ = self.sock.recvfrom(self.bufsize)
@@ -147,11 +145,23 @@ class UDPClient(object):
 
 if __name__ == '__main__':
     tr = ('zer0day.ch', 1337)
-    ih = '2a3af168e68cf51d8b33eed21c2557547ef26249'
+    ih = ['2a3af168e68cf51d8b33eed21c2557547ef26249'] * 3
+    print ih
     clnt = UDPClient(tr, ih)
     clnt.connect()
     print clnt.connect_id
     clnt.event = 0
-    clnt.announce()
-    print clnt.interval, clnt.seeders, clnt.leechers
-    print clnt.peers
+    def announce_test(clnt):
+        clnt.announce()
+        print clnt.interval, clnt.seeders, clnt.leechers
+        print clnt.peers
+
+    def scrape_test(clnt):
+        clnt.scrape()
+        print clnt.completed, clnt.seeders, clnt.leechers
+        print clnt.peers
+
+    announce_test(clnt)
+    #scrape_test(clnt)
+
+
