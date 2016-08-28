@@ -1,3 +1,6 @@
+''' Implementation of "UDP Tracker Protocol for Bittorrent".
+Refer to "http://www.bittorrent.org/beps/bep_0015.html".
+'''
 import struct, socket, random, urllib, binascii
 
 class UDPClient(object):
@@ -6,6 +9,7 @@ class UDPClient(object):
         self.connect_id = 0x41727101980 # default connection ID
         self.tracker = tracker # tracker: (host, port)
         self.info_hash = info_hash # hex string
+        self._info_hash = binascii.unhexlify(info_hash) # binascii.a2b_hex
         self.peer_id = '-PU1-' + str(id(self))
         self.downloaded = 0
         self.left = 0
@@ -19,12 +23,19 @@ class UDPClient(object):
         self.sock.settimeout(8)
         self.bufsize = 4096
         self.peers = [] # list of peers
-        self.interval = self.leechers = self.seeders = 0
+        #self.interval = self.leechers = self.seeders = 0
+        self.interval = 0
+        self.seeders = []
+        self.leechers = []
+        self.completed = 0
 
     def __del__(self):
         self.sock.close()
 
     def connect(self):
+        '''
+        Send connect request, then parse response.
+        '''
         tid = ord('c')
         req = struct.pack(
                 '!Q2I',
@@ -46,15 +57,20 @@ class UDPClient(object):
         elif action == 0x3:
             error = struct.unpack_from('!s', buf, offset)
             raise RuntimeError('UDPClient: connect: {}'.format(error))
+        else:
+            raise RuntimeError('Unrecognized action: 0x{}. (expected 0x0)'.format(action))
 
     def announce(self):
+        '''
+        Send announce request, then parse response.
+        '''
         assert self.connect_id != 0x41727101980, 'Has not connected to tracker. (default connect id)'
         tid = ord('a')
         req = struct.pack('!Q2I20s20s3q4iH',
                 self.connect_id, # connect id recieved from tracker
                 0x1, # action: announce
                 tid,
-                binascii.unhexlify(self.info_hash),
+                self._info_hash,
                 self.peer_id,
                 self.downloaded,
                 self.left,
@@ -75,7 +91,9 @@ class UDPClient(object):
         offset += 4
         assert r_tid == tid, 'Transaction ID not matching. (Expected {}, got {})'.format(tid, r_tid)
         if action == 0x1:
-            self.interval, self.leechers, self.seeders = struct.unpack_from('!3I', res, offset)
+            self.interval, _leechers, _seeders = struct.unpack_from('!3I', res, offset)
+            self.seeders.append(_seeders)
+            self.leechers.append(_leechers)
             offset += 4 * 3
             remain = len(res) - offset
             assert remain % 6 == 0
@@ -89,10 +107,43 @@ class UDPClient(object):
                 self.peers.append(peer)
         elif action == 0x3:
             error = struct.unpack_from('!s', buf, offset)
-            raise RuntimeError('UDPClient: connect: {}'.format(error))
+            raise RuntimeError('UDPClient: announce: {}'.format(error))
+        else:
+            raise RuntimeError('Unrecognized action: 0x{}. (expected 0x1)'.format(action))
 
     def scrape(self):
-        pass
+        '''
+        Send scrape request, then parse response.
+        (note: up to 74 torrents can be scraped at once.)
+        '''
+        tid = ord('s')
+        # FIXME: 1 < n <= 74, 'n' info_hash to scrape.
+        req = struct.pack('!Q2I20s',
+                self.connect_id,
+                0x2, # action: scrape
+                tid,
+                self._info_hash,
+                )
+        nbytes = self.sock.sendto(req, self.tracker)
+        assert nbytes == len(req), '{} bytes was sent, expected {}'.format(nbytes, len(req))
+        res, _ = self.sock.recvfrom(self.bufsize)
+        assert len(res) >= 8, 'response size should be at least 8 bytes'
+        action = struct.unpack_from('!I', res)[0]
+        offset = 4
+        r_tid = struct.unpack_from('!I', res, offset)[0]
+        offset += 4
+        assert r_tid == tid, 'Transaction ID not matching. (Expected {}, got {})'.format(tid, r_tid)
+        if action == 0x2:
+            while offset < len(res):
+                _seeders, self.completed, _leechers = struct.unpack_from('!3I', res, offset)
+                self.seeders.append(_seeders)
+                self.leechers.append(_leechers)
+                offset += 4 * 3
+        elif action == 0x3:
+            error = struct.unpack_from('!s', buf, offset)
+            raise RuntimeError('UDPClient: scrape: {}'.format(error))
+        else:
+            raise RuntimeError('Unrecognized action: 0x{}. (expected 0x2)'.format(action))
 
 if __name__ == '__main__':
     tr = ('zer0day.ch', 1337)
